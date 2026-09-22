@@ -1,0 +1,13 @@
+# scripts/requirements.txt
+# Dependencias del contenedor de inicialización (init_mlflow_experiment.py)
+
+# ── ML ─────────────────────────────────────────────────────────────
+scikit-learn==1.4.2
+category-encoders==2.6.3
+numpy==1.26.4
+pandas==2.2.2
+
+# ── MLflow + storage ───────────────────────────────────────────────
+mlflow==2.13.0
+boto3==1.34.101         # cliente MinIO/S3 — lee/escribe artefactos
+psycopg2-binary==2.9.9  # PostgreSQL — backend de tracking de MLflow
