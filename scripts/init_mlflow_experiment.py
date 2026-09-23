@@ -235,10 +235,9 @@ def build_sklearn_pipeline() -> Pipeline:
     Construye el pipeline de preprocesamiento + clasificador.
 
     Reproduce las transformaciones de las celdas 43-56 del notebook:
-    - SimpleImputer (mediana) para columnas numéricas
-    - RobustScaler  para dyad_freq y country_te (sesgadas)
-    - StandardScaler para el resto de continuas
-    - Passthrough   para binarias / one-hot
+    - SimpleImputer (mediana) + RobustScaler  para dyad_freq y country_te (sesgadas)
+    - SimpleImputer (mediana) + StandardScaler para el resto de continuas
+    - Passthrough para binarias / one-hot
 
     El TargetEncoder y el frequency encoding están fuera del pipeline
     porque dependen del target y del conteo de filas de train; se
@@ -246,17 +245,22 @@ def build_sklearn_pipeline() -> Pipeline:
     """
     preprocessor = ColumnTransformer(
         transformers=[
-            ("robust",   RobustScaler(),   SKEWED_FEATS),
-            ("standard", StandardScaler(), STANDARD_FEATS),
-            ("pass",     "passthrough",    PASSTHROUGH_FEATS),
+            ("robust",   Pipeline([
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler",  RobustScaler()),
+            ]), SKEWED_FEATS),
+            ("standard", Pipeline([
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler",  StandardScaler()),
+            ]), STANDARD_FEATS),
+            ("pass", "passthrough", PASSTHROUGH_FEATS),
         ],
         remainder="drop",
     )
 
     pipeline = Pipeline([
-        ("imputer",        SimpleImputer(strategy="median")),
-        ("preprocessor",   preprocessor),
-        ("classifier",     RandomForestClassifier(**BEST_RF_PARAMS)),
+        ("preprocessor", preprocessor),
+        ("classifier",   RandomForestClassifier(**BEST_RF_PARAMS)),
     ])
 
     return pipeline
