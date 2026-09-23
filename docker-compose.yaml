@@ -225,9 +225,18 @@ services:
       dockerfile: Dockerfile.init
     command: python init_mlflow_experiment.py
     env_file: .env
+    profiles:
+      - all
     depends_on:
       - mlflow
-      - minio
+      - s3
+    networks:
+      - backend
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_S3_ENDPOINT_URL=http://s3:9000
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=minio123
     restart: "no"
 
   airflow-apiserver:
