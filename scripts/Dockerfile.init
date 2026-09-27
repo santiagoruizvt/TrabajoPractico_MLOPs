@@ -1,0 +1,36 @@
+# ──────────────────────────────────────────────────────────────────
+# Dockerfile.init
+# Imagen efímera para init_mlflow_experiment.py
+#
+# Corre el script de inicialización, no expone puertos y muere
+#
+# Uso:
+#   docker-compose run --rm init-mlflow
+# ──────────────────────────────────────────────────────────────────
+
+FROM python:3.11-slim
+
+# ── Dependencias de sistema ────────────────────────────────────────
+# gcc/g++ requeridos por category-encoders (compilación de extensiones C)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gcc \
+        g++ \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Directorio de trabajo ──────────────────────────────────────────
+WORKDIR /scripts
+
+# ── Dependencias Python ────────────────────────────────────────────
+# Se copia primero para aprovechar la caché de Docker:
+# si requirements.txt no cambia, esta capa no se rebuildeará
+# aunque sí cambie init_mlflow_experiment.py
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ── Código del script ──────────────────────────────────────────────
+COPY init_mlflow_experiment.py .
+
+# ── Comando por defecto ────────────────────────────────────────────
+CMD ["python", "init_mlflow_experiment.py"]
