@@ -7,9 +7,8 @@ Script de inicialización único (one-shot) para el proyecto UCDP-GED.
   2. Reproduce exactamente el preprocesamiento del notebook (feature engineering,
      encoders, scalers, selección de features) pero empaquetado en un Pipeline
      sklearn serializable.
-  3. Crea el experimento en MLflow y registra una primera run con el
-     Random Forest optimizado (mejores hiperparámetros del notebook).
-  4. Promueve el modelo al stage "Production" en el Model Registry.
+  3. Crea el experimento en MLflow y registra el pipeline entrenado como
+      artefacto de una run. El DAG de Airflow registra y promueve el modelo.
 
 Ejecutar UNA sola vez, desde el host o desde un contenedor con acceso a MLflow y MinIO:
     python init_mlflow_experiment.py
@@ -269,11 +268,10 @@ def build_sklearn_pipeline() -> Pipeline:
 # ─────────────────────────────────────────────────────────────────
 # 5. Main
 # ─────────────────────────────────────────────────────────────────
-def main():
+def train_and_log_model() -> str:
     # ── Configurar MLflow ────────────────────────────────────────
     mlflow.set_tracking_uri(MLFLOW_URI)
     mlflow.set_experiment(EXPERIMENT_NAME)
-    client = MlflowClient(tracking_uri=MLFLOW_URI)
     print(f"[0/5] MLflow tracking URI: {MLFLOW_URI}")
     print(f"      Experimento        : {EXPERIMENT_NAME}")
 
@@ -300,7 +298,7 @@ def main():
     )
 
     # ── Entrenar y registrar en MLflow ───────────────────────────
-    print("[4/5] Entrenando pipeline y registrando en MLflow ...")
+    print("[4/4] Entrenando pipeline y guardando el artefacto en MLflow ...")
     with mlflow.start_run(run_name="rf_optimizado_notebook_params") as run:
 
         pipeline = build_sklearn_pipeline()
@@ -336,11 +334,10 @@ def main():
             f.write(report)
         mlflow.log_artifact("/tmp/classification_report.txt")
 
-        # Registrar el pipeline completo en el Model Registry
-        model_info = mlflow.sklearn.log_model(
+        # El DAG registra este artefacto después de que finaliza el entrenamiento.
+        mlflow.sklearn.log_model(
             sk_model=pipeline,
             artifact_path="model",
-            registered_model_name=MODEL_NAME,
             input_example=X_train_fe.head(3),
             signature=mlflow.models.infer_signature(
                 X_train_fe, y_pred_train
@@ -355,22 +352,12 @@ def main():
         print(f"    gap F1    : {f1_train - f1_test:.4f}")
         print(f"\n{report}")
 
-    # ── Promover a Production en el Model Registry ───────────────
-    print("[5/5] Promoviendo modelo a stage 'Production' ...")
-    # La versión recién registrada es la última
-    latest = client.get_latest_versions(MODEL_NAME, stages=["None"])
-    version = latest[0].version
+    return run.info.run_id
 
-    client.transition_model_version_stage(
-        name=MODEL_NAME,
-        version=version,
-        stage="Production",
-        archive_existing_versions=True,   # archiva versiones anteriores
-    )
-    print(f"    Modelo '{MODEL_NAME}' v{version} → Production ✓")
-    print("\n✅ Inicialización completa.")
-    print(f"   Cargá el modelo en la API con:")
-    print(f"   mlflow.sklearn.load_model('models:/{MODEL_NAME}/Production')")
+
+def main():
+    run_id = train_and_log_model()
+    print(f"\nEntrenamiento completo. run_id: {run_id}")
 
 
 if __name__ == "__main__":

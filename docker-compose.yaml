@@ -48,12 +48,15 @@ x-airflow-common: &airflow-common
     AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_ACCESS_KEY:-minio123}
     AWS_ENDPOINT_URL_S3: http://s3:9000
     MLFLOW_S3_ENDPOINT_URL: http://s3:9000
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    DATA_BUCKET: ${DATA_BUCKET:-s3://data/ucdp_ged.csv}
   volumes:
     - ${AIRFLOW_PROJ_DIR:-./airflow}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-./airflow}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-./airflow}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-./airflow}/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-./airflow}/secrets:/opt/secrets
+    - ./scripts:/opt/mlops/scripts:ro
   networks:
     - frontend
     - backend
@@ -192,7 +195,7 @@ services:
     image: backend_fastapi
     container_name: fastapi
     profiles:
-      - all
+      - manual-init
     depends_on:
       mlflow:
         condition: service_healthy
@@ -226,7 +229,7 @@ services:
     command: python init_mlflow_experiment.py
     env_file: .env
     profiles:
-      - all
+      - manual-training
     depends_on:
       - mlflow
       - s3
