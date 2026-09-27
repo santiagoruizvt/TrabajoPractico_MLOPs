@@ -11,7 +11,8 @@ numpy==1.26.4
 pandas==2.2.2
 
 # ── MLflow + storage ───────────────────────────────────────────────
-mlflow==2.13.0
+mlflow
+skops
 boto3==1.34.101
 psycopg2-binary==2.9.9
 
