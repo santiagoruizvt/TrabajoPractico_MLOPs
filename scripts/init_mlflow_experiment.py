@@ -345,6 +345,7 @@ def main():
             signature=mlflow.models.infer_signature(
                 X_train_fe, y_pred_train
             ),
+            skops_trusted_types=["numpy.dtype", "sklearn.tree._tree.Tree"],
         )
 
         print(f"\n    run_id    : {run.info.run_id}")
