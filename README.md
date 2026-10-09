@@ -62,6 +62,15 @@ docker compose --profile all up
    - API: http://localhost:8800/
    - Documentación de la API: http://localhost:8800/docs
 
+7. Para inicializar el modelo, ingresá a Apache Airflow (http://localhost:8080) y triggeareá manualmente el DAG `ucdp_download_dataset`. Este DAG encadena automáticamente todo el flujo de inicialización:
+
+   - **Si el dataset no está en MinIO:** lo descarga desde [ucdp.uu.se](https://ucdp.uu.se/downloads/), lo descomprime en memoria y lo sube a `s3://data/ucdp_ged.csv`. Si el dataset ya existe, este paso se saltea.
+   - **Una vez disponible el dataset:** se triggerea automáticamente el DAG `ucdp_model_lifecycle`, que realiza la búsqueda de hiperparámetros, entrena el modelo final, lo registra en MLflow y lo promueve al stage `Production`.
+
+   Una vez que `ucdp_model_lifecycle` finaliza con éxito, la API está lista para recibir predicciones. Podés verificarlo en http://localhost:8800/health, que indicará el nombre y versión del modelo en Production.
+
+   > **Nota:** la API levanta junto con el resto de los servicios en el paso 6. Si intentás hacer una predicción antes de que el DAG termine, el endpoint `/predict` devolverá un error `503` indicando que el modelo aún no está disponible. El endpoint `/health` siempre responde independientemente del estado del modelo.
+
 Si estás usando un servidor externo a tu computadora de trabajo, reemplaza `localhost` por su IP (puede ser una privada si tu servidor está en tu LAN o una IP pública si no; revisa firewalls u otras reglas que eviten las conexiones).
 
 Todos los puertos u otras configuraciones se pueden modificar en el archivo `.env`. Se invita a jugar y romper para aprender; siempre puedes volver a clonar este repositorio.
