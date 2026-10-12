@@ -4,10 +4,12 @@ app.py
 API REST para servir el modelo de clasificación de severidad UCDP-GED.
 
 Endpoints:
-    GET  /          → bienvenida
-    GET  /health    → estado del servicio y del modelo
-    POST /predict   → predicción de severidad para un evento
-    POST /predict/batch → predicción para múltiples eventos
+    GET  /                  → bienvenida
+    GET  /health            → estado del servicio y del modelo
+    GET  /model/info        → información del modelo cargado
+    GET  /predict/example   → ejemplo de payload para /predict
+    POST /predict           → predicción de severidad para un evento
+    POST /predict/batch     → predicción para múltiples eventos
 """
 
 import os
@@ -15,7 +17,6 @@ import mlflow.sklearn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
-import numpy as np
 import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────
@@ -27,22 +28,34 @@ MODEL_STAGE = "Production"
 
 SEVERITY_LABELS = {0: "Bajo", 1: "Medio", 2: "Alto"}
 
+FEATURE_ORDER = sorted([
+    "civilian_ratio", "country_te",   "date_prec",    "dyad_freq",
+    "dyad_id",        "era_1989-99",  "era_2000-09",  "event_clarity",
+    "latitude",       "longitude",    "month_cos",    "month_sin",
+    "region_Africa",  "region_Americas", "region_Asia", "region_Europe",
+    "region_Middle East", "tov_1",    "tov_2",        "tov_3",
+    "where_prec",     "year",
+])
+
 # ─────────────────────────────────────────────────────────────────
 # Carga del modelo al iniciar la API
 # ─────────────────────────────────────────────────────────────────
 mlflow.set_tracking_uri(MLFLOW_URI)
+client = mlflow.tracking.MlflowClient()
 
 try:
     model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{MODEL_STAGE}")
     model_loaded = True
+    model_version = client.get_latest_versions(MODEL_NAME, stages=[MODEL_STAGE])[0].version
     print(f"✅ Modelo '{MODEL_NAME}/{MODEL_STAGE}' cargado correctamente.")
 except Exception as e:
     model = None
     model_loaded = False
+    model_version = None
     print(f"⚠️  No se pudo cargar el modelo: {e}")
 
 # ─────────────────────────────────────────────────────────────────
-# Esquema de entrada (las 22 features seleccionadas)
+# Esquema de entrada
 # ─────────────────────────────────────────────────────────────────
 class EventFeatures(BaseModel):
     civilian_ratio:     float = Field(..., ge=0, le=1,  description="Proporción de bajas civiles sobre el total (0–1)")
@@ -50,8 +63,8 @@ class EventFeatures(BaseModel):
     date_prec:          int   = Field(..., ge=1, le=5,  description="Precisión de la fecha del evento (1–5)")
     dyad_freq:          float = Field(..., ge=0,         description="Frecuencia histórica del par de actores")
     dyad_id:            int   = Field(...,               description="ID numérico de la díada")
-    era_1989_99:        int   = Field(..., ge=0, le=1,  alias="era_1989-99",  description="1 si el evento ocurrió entre 1989 y 1999")
-    era_2000_09:        int   = Field(..., ge=0, le=1,  alias="era_2000-09",  description="1 si el evento ocurrió entre 2000 y 2009")
+    era_1989_99:        int   = Field(..., ge=0, le=1,  alias="era_1989-99",       description="1 si el evento ocurrió entre 1989 y 1999")
+    era_2000_09:        int   = Field(..., ge=0, le=1,  alias="era_2000-09",       description="1 si el evento ocurrió entre 2000 y 2009")
     event_clarity:      int   = Field(..., ge=1, le=2,  description="Claridad del evento (1=claro, 2=dudoso)")
     latitude:           float = Field(...,               description="Latitud geográfica del evento")
     longitude:          float = Field(...,               description="Longitud geográfica del evento")
@@ -72,19 +85,9 @@ class EventFeatures(BaseModel):
         populate_by_name = True
 
 # ─────────────────────────────────────────────────────────────────
-# Helpers
+# Helper
 # ─────────────────────────────────────────────────────────────────
-FEATURE_ORDER = sorted([
-    "civilian_ratio", "country_te",   "date_prec",    "dyad_freq",
-    "dyad_id",        "era_1989-99",  "era_2000-09",  "event_clarity",
-    "latitude",       "longitude",    "month_cos",    "month_sin",
-    "region_Africa",  "region_Americas", "region_Asia", "region_Europe",
-    "region_Middle East", "tov_1",    "tov_2",        "tov_3",
-    "where_prec",     "year",
-])
-
 def features_to_df(event: EventFeatures) -> pd.DataFrame:
-    """Convierte el objeto Pydantic a un DataFrame con el orden canónico de features."""
     data = event.model_dump(by_alias=True)
     return pd.DataFrame([data])[FEATURE_ORDER]
 
@@ -115,12 +118,77 @@ def read_root():
 def health():
     """
     Verifica que la API está activa y que el modelo fue cargado correctamente.
+    Siempre responde, independientemente del estado del modelo.
     """
     return {
-        "status":       "ok" if model_loaded else "degraded",
-        "model_loaded": model_loaded,
-        "model_name":   MODEL_NAME,
-        "model_stage":  MODEL_STAGE,
+        "status":        "ok" if model_loaded else "degraded",
+        "model_loaded":  model_loaded,
+        "model_name":    MODEL_NAME,
+        "model_stage":   MODEL_STAGE,
+        "model_version": model_version,
+    }
+
+# ── GET /model/info ───────────────────────────────────────────────
+@app.get("/model/info", tags=["General"])
+def model_info():
+    """
+    Devuelve información detallada del modelo en Production:
+    versión, features esperadas y métricas registradas en MLflow.
+    """
+    if not model_loaded:
+        raise HTTPException(
+            status_code=503,
+            detail="El modelo no está disponible. Verificá /health para más detalles."
+        )
+    try:
+        run = client.get_latest_versions(MODEL_NAME, stages=[MODEL_STAGE])[0]
+        run_data = client.get_run(run.run_id).data
+        metrics = {k: round(v, 4) for k, v in run_data.metrics.items()}
+        params  = run_data.params
+
+        return {
+            "model_name":    MODEL_NAME,
+            "model_version": model_version,
+            "model_stage":   MODEL_STAGE,
+            "run_id":        run.run_id,
+            "features":      FEATURE_ORDER,
+            "n_features":    len(FEATURE_ORDER),
+            "metrics":       metrics,
+            "params":        params,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── GET /predict/example ──────────────────────────────────────────
+@app.get("/predict/example", tags=["Predicción"])
+def predict_example():
+    """
+    Devuelve un ejemplo de payload válido para usar en POST /predict.
+    Representa un evento de violencia estatal en Medio Oriente en 2015.
+    """
+    return {
+        "civilian_ratio":    0.5,
+        "country_te":        1.2,
+        "date_prec":         1,
+        "dyad_freq":         100.0,
+        "dyad_id":           123,
+        "era_1989-99":       0,
+        "era_2000-09":       0,
+        "event_clarity":     1,
+        "latitude":          33.5,
+        "longitude":         36.3,
+        "month_cos":         0.5,
+        "month_sin":         0.8,
+        "region_Africa":     0,
+        "region_Americas":   0,
+        "region_Asia":       0,
+        "region_Europe":     0,
+        "region_Middle East": 1,
+        "tov_1":             1,
+        "tov_2":             0,
+        "tov_3":             0,
+        "where_prec":        1,
+        "year":              2015,
     }
 
 # ── POST /predict ─────────────────────────────────────────────────
@@ -137,19 +205,16 @@ def predict(event: EventFeatures):
             status_code=503,
             detail="El modelo no está disponible. Verificá /health para más detalles."
         )
-
     try:
-        X = features_to_df(event)
-        pred        = int(model.predict(X)[0])
-        proba       = model.predict_proba(X)[0].tolist()
-        proba_dict  = {SEVERITY_LABELS[i]: round(p, 4) for i, p in enumerate(proba)}
+        X     = features_to_df(event)
+        pred  = int(model.predict(X)[0])
+        proba = model.predict_proba(X)[0].tolist()
 
         return {
             "severity_code":  pred,
             "severity_label": SEVERITY_LABELS[pred],
-            "probabilities":  proba_dict,
+            "probabilities":  {SEVERITY_LABELS[i]: round(p, 4) for i, p in enumerate(proba)},
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -167,28 +232,27 @@ def predict_batch(events: list[EventFeatures]):
             status_code=503,
             detail="El modelo no está disponible. Verificá /health para más detalles."
         )
-
     if len(events) > 100:
         raise HTTPException(
             status_code=422,
             detail="El batch no puede superar los 100 eventos por llamada."
         )
-
     try:
-        X = pd.concat([features_to_df(e) for e in events], ignore_index=True)
+        X      = pd.concat([features_to_df(e) for e in events], ignore_index=True)
         preds  = model.predict(X).tolist()
         probas = model.predict_proba(X).tolist()
 
-        results = []
-        for pred, proba in zip(preds, probas):
-            results.append({
-                "severity_code":  int(pred),
-                "severity_label": SEVERITY_LABELS[int(pred)],
-                "probabilities":  {SEVERITY_LABELS[i]: round(p, 4)
-                                   for i, p in enumerate(proba)},
-            })
-
-        return {"predictions": results, "count": len(results)}
-
+        return {
+            "predictions": [
+                {
+                    "severity_code":  int(pred),
+                    "severity_label": SEVERITY_LABELS[int(pred)],
+                    "probabilities":  {SEVERITY_LABELS[i]: round(p, 4)
+                                      for i, p in enumerate(proba)},
+                }
+                for pred, proba in zip(preds, probas)
+            ],
+            "count": len(events),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
