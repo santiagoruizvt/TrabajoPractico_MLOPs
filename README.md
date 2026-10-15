@@ -80,7 +80,7 @@ docker compose --profile all up
 7. Para inicializar el modelo, ingresá a Apache Airflow (http://localhost:8080) y triggeareá manualmente el DAG `ucdp_download_dataset`. Este DAG encadena automáticamente todo el flujo de inicialización:
 
    - **Si el dataset no está en MinIO:** lo descarga desde [ucdp.uu.se](https://ucdp.uu.se/downloads/), lo descomprime en memoria y lo sube a `s3://data/ucdp_ged.csv`. Si el dataset ya existe, este paso se saltea.
-   - **Una vez disponible el dataset:** se triggerea automáticamente el DAG `ucdp_model_lifecycle`, que realiza la búsqueda de hiperparámetros, entrena el modelo final, lo registra en MLflow y lo promueve al stage `Production`.
+   - **Una vez disponible el dataset:** se triggerea automáticamente el DAG `ucdp_model_lifecycle`, que realiza la búsqueda de hiperparámetros, entrena el modelo final, lo registra en MLflow y lo promueve al stage `Production`. La versión que estaba en `Production` pasa a `Archived` y, al final, el DAG llama a `POST /model/reload` para que la API empiece a servir la nueva versión sin reiniciar el contenedor.
 
    Una vez que `ucdp_model_lifecycle` finaliza con éxito, la API está lista para recibir predicciones. Podés verificarlo en http://localhost:8800/health, que indicará el nombre y versión del modelo en Production.
 
@@ -113,6 +113,9 @@ curl http://localhost:8800/health
 
 # Ver información del modelo cargado (versión, features, métricas)
 curl http://localhost:8800/model/info
+
+# Recargar el modelo que esté en Production (lo hace el DAG automáticamente)
+curl -X POST http://localhost:8800/model/reload
 
 # Obtener un ejemplo de payload listo para usar
 curl http://localhost:8800/predict/example

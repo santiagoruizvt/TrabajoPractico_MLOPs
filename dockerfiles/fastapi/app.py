@@ -7,12 +7,14 @@ Endpoints:
     GET  /                  → bienvenida
     GET  /health            → estado del servicio y del modelo
     GET  /model/info        → información del modelo cargado
+    POST /model/reload      → recarga el modelo que esté en Production
     GET  /predict/example   → ejemplo de payload para /predict
     POST /predict           → predicción de severidad para un evento
     POST /predict/batch     → predicción para múltiples eventos
 """
 
 import os
+import threading
 import mlflow.sklearn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -43,15 +45,47 @@ FEATURE_ORDER = sorted([
 mlflow.set_tracking_uri(MLFLOW_URI)
 client = mlflow.tracking.MlflowClient()
 
+model = None
+model_loaded = False
+model_version = None
+model_run_id = None
+_model_lock = threading.Lock()
+
+
+def load_production_model():
+    """
+    Busca la versión en Production (la de número más alto si hubiera varias)
+    y la carga por número de versión, para que el modelo servido y su
+    metadata correspondan siempre a la misma versión.
+    """
+    candidates = [
+        v for v in client.search_model_versions(f"name='{MODEL_NAME}'")
+        if v.current_stage == MODEL_STAGE
+    ]
+    if not candidates:
+        raise RuntimeError(f"No hay versiones de '{MODEL_NAME}' en {MODEL_STAGE}.")
+    target = max(candidates, key=lambda v: int(v.version))
+    loaded = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{target.version}")
+    return loaded, str(target.version), target.run_id
+
+
+def reload_model():
+    """
+    Recarga el modelo en Production. Si la carga falla, se mantiene el
+    modelo anterior (si lo había) y se propaga la excepción.
+    """
+    global model, model_loaded, model_version, model_run_id
+    with _model_lock:
+        loaded, version, run_id = load_production_model()
+        model, model_version, model_run_id = loaded, version, run_id
+        model_loaded = True
+    return version
+
+
 try:
-    model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{MODEL_STAGE}")
-    model_loaded = True
-    model_version = client.get_latest_versions(MODEL_NAME, stages=[MODEL_STAGE])[0].version
-    print(f"✅ Modelo '{MODEL_NAME}/{MODEL_STAGE}' cargado correctamente.")
+    reload_model()
+    print(f"✅ Modelo '{MODEL_NAME}' v{model_version} ({MODEL_STAGE}) cargado correctamente.")
 except Exception as e:
-    model = None
-    model_loaded = False
-    model_version = None
     print(f"⚠️  No se pudo cargar el modelo: {e}")
 
 # ─────────────────────────────────────────────────────────────────
@@ -141,16 +175,17 @@ def model_info():
             detail="El modelo no está disponible. Verificá /health para más detalles."
         )
     try:
-        run = client.get_latest_versions(MODEL_NAME, stages=[MODEL_STAGE])[0]
-        run_data = client.get_run(run.run_id).data
+        # Metadata del modelo cargado en memoria, no de la última versión registrada.
+        version, run_id = model_version, model_run_id
+        run_data = client.get_run(run_id).data
         metrics = {k: round(v, 4) for k, v in run_data.metrics.items()}
         params  = run_data.params
 
         return {
             "model_name":    MODEL_NAME,
-            "model_version": model_version,
+            "model_version": version,
             "model_stage":   MODEL_STAGE,
-            "run_id":        run.run_id,
+            "run_id":        run_id,
             "features":      FEATURE_ORDER,
             "n_features":    len(FEATURE_ORDER),
             "metrics":       metrics,
@@ -158,6 +193,28 @@ def model_info():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ── POST /model/reload ────────────────────────────────────────────
+@app.post("/model/reload", tags=["General"])
+def model_reload():
+    """
+    Vuelve a consultar MLflow y carga la versión que esté en Production.
+    Lo invoca el DAG `ucdp_model_lifecycle` después de promover un modelo.
+    Si la carga falla, la API sigue sirviendo el modelo anterior.
+    """
+    previous_version = model_version
+    try:
+        current_version = reload_model()
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No se pudo recargar el modelo: {e}",
+        )
+    return {
+        "previous_version": previous_version,
+        "current_version":  current_version,
+        "reloaded":         previous_version != current_version,
+    }
 
 # ── GET /predict/example ──────────────────────────────────────────
 @app.get("/predict/example", tags=["Predicción"])
@@ -206,9 +263,10 @@ def predict(event: EventFeatures):
             detail="El modelo no está disponible. Verificá /health para más detalles."
         )
     try:
+        m     = model  # referencia fija por si hay un reload concurrente
         X     = features_to_df(event)
-        pred  = int(model.predict(X)[0])
-        proba = model.predict_proba(X)[0].tolist()
+        pred  = int(m.predict(X)[0])
+        proba = m.predict_proba(X)[0].tolist()
 
         return {
             "severity_code":  pred,
@@ -238,9 +296,10 @@ def predict_batch(events: list[EventFeatures]):
             detail="El batch no puede superar los 100 eventos por llamada."
         )
     try:
+        m      = model  # referencia fija por si hay un reload concurrente
         X      = pd.concat([features_to_df(e) for e in events], ignore_index=True)
-        preds  = model.predict(X).tolist()
-        probas = model.predict_proba(X).tolist()
+        preds  = m.predict(X).tolist()
+        probas = m.predict_proba(X).tolist()
 
         return {
             "predictions": [

@@ -6,6 +6,7 @@ from airflow.decorators import dag, task
 
 MODEL_NAME = "ucdp-severity-rf"
 MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+FASTAPI_URL = os.getenv("FASTAPI_URL", "http://fastapi:8800")
 
 
 @dag(
@@ -70,10 +71,13 @@ def ucdp_model_lifecycle():
             )
 
         # Promote first so a failure while archiving does not leave no Production model.
-        for previous in client.get_latest_versions(
-            MODEL_NAME, stages=["Production"]
-        ):
-            if str(previous.version) != version:
+        # get_latest_versions only returns the highest version per stage, so it
+        # would never see the previous Production version; list them all instead.
+        for previous in client.search_model_versions(f"name='{MODEL_NAME}'"):
+            if (
+                previous.current_stage == "Production"
+                and str(previous.version) != version
+            ):
                 client.transition_model_version_stage(
                     name=MODEL_NAME,
                     version=previous.version,
@@ -83,9 +87,37 @@ def ucdp_model_lifecycle():
 
         return version
 
+    @task(retries=2)
+    def reload_api_model(version: str) -> None:
+        import json
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(
+            f"{FASTAPI_URL}/model/reload", method="POST"
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                body = json.loads(response.read())
+        except urllib.error.HTTPError:
+            # The API is up but failed to load the model: retry / fail the task.
+            raise
+        except urllib.error.URLError as exc:
+            # The API is not running; it will load the Production model on startup.
+            print(f"FastAPI not reachable at {FASTAPI_URL} ({exc.reason}); skipping reload.")
+            return
+
+        print(f"FastAPI reload: {body}")
+        if body.get("current_version") != str(version):
+            raise RuntimeError(
+                f"FastAPI is serving version {body.get('current_version')}, "
+                f"expected {version}."
+            )
+
     run_id = train_model()
     version = register_model(run_id)
-    promote_model(version)
+    promoted = promote_model(version)
+    reload_api_model(promoted)
 
 
 ucdp_model_lifecycle()
