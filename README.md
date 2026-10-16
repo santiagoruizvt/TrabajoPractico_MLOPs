@@ -1,4 +1,20 @@
-# Ejemplo de ambiente productivo
+# Clasificador de Severidad de Eventos de Violencia Organizada — UCDP-GED
+
+### MLOps1 - CEIA - FIUBA
+
+**Grupo 8**
+- Santiago Ruiz
+- Maximiliano Antonio Cencic
+- Jeraldinne Del Valle Molleda Guanipa
+
+---
+
+## Contexto
+
+Este repositorio implementa en un entorno productivo el modelo de Machine Learning desarrollado en la materia Aprendizaje de Máquina 1. El modelo predice la **severidad** (Bajo / Medio / Alto) de eventos de violencia organizada a partir del dataset [UCDP Georeferenced Event Dataset (GED) v24.1](https://ucdp.uu.se/downloads/).
+
+El problema es de **clasificación multiclase supervisada**: dado un evento de violencia con sus características contextuales (país, región, actores, fecha, precisión geográfica), el modelo predice cuán letal fue ese evento. El modelo final es un **Random Forest** optimizado con Macro F1 = 0.57 en test.
+
 ### MLOps1 - CEIA - FIUBA
 Estructura de servicios para la implementación del proyecto final de MLOps1 - CEIA - FIUBA
 
@@ -47,15 +63,14 @@ Además se cuenta con una implementación ejemplo de predicción en bache con un
 
 1. Para poder levantar todos los servicios, primero instala [Docker](https://docs.docker.com/engine/install/) en tu computadora (o en el servidor que desees usar).
 2. Clona este repositorio.
-3. Crea las carpetas `airflow/config`, `airflow/dags`, `airflow/logs`, `airflow/plugins`, `airflow/logs`.
-4. Si estás en Linux o MacOS, en el archivo `.env`, reemplaza `AIRFLOW_UID` por el de tu usuario o alguno que consideres oportuno (para encontrar el UID, usa el comando `id -u <username>`). De lo contrario, Airflow dejará sus carpetas internas como root y no podrás subir DAGs (en `airflow/dags`) o plugins, etc.
-5. En la carpeta raíz de este repositorio, ejecuta:
+3. Si estás en Linux o MacOS, en el archivo `.env`, reemplaza `AIRFLOW_UID` por el de tu usuario o alguno que consideres oportuno (para encontrar el UID, usa el comando `id -u <username>`). De lo contrario, Airflow dejará sus carpetas internas como root y no podrás subir DAGs (en `airflow/dags`) o plugins, etc.
+4. En la carpeta raíz de este repositorio, ejecuta:
 
 ```bash
 docker compose --profile all up
 ```
 
-6. Una vez que todos los servicios estén funcionando (verifica con el comando `docker ps -a` que todos los servicios estén healthy o revisa en Docker Desktop), podrás acceder a los diferentes servicios mediante:
+5. Una vez que todos los servicios estén funcionando (verifica con el comando `docker ps -a` que todos los servicios estén healthy o revisa en Docker Desktop), podrás acceder a los diferentes servicios mediante:
    - Apache Airflow: http://localhost:8080
    - MLflow: http://localhost:5001
    - MinIO: http://localhost:9001 (ventana de administración de Buckets)
@@ -74,6 +89,81 @@ docker compose --profile all up
 Si estás usando un servidor externo a tu computadora de trabajo, reemplaza `localhost` por su IP (puede ser una privada si tu servidor está en tu LAN o una IP pública si no; revisa firewalls u otras reglas que eviten las conexiones).
 
 Todos los puertos u otras configuraciones se pueden modificar en el archivo `.env`. Se invita a jugar y romper para aprender; siempre puedes volver a clonar este repositorio.
+
+---
+
+## Verificar en MLflow
+
+Una vez que el DAG `ucdp_model_lifecycle` termina, podés verificar en MLflow:
+
+1. Abrí http://localhost:5001
+2. Entrá al experimento `ucdp-severity-classification`
+3. Verificá que existe una run con las métricas `f1_test`, `f1_train` y `acc_test`
+4. En **Models** → `ucdp-severity-rf` → verificá que la versión más reciente está en stage `Production`
+
+---
+
+## Testear la API
+
+### Desde la terminal con curl
+
+```bash
+# Verificar estado del servicio y del modelo
+curl http://localhost:8800/health
+
+# Ver información del modelo cargado (versión, features, métricas)
+curl http://localhost:8800/model/info
+
+# Obtener un ejemplo de payload listo para usar
+curl http://localhost:8800/predict/example
+
+# Realizar una predicción
+curl -X POST http://localhost:8800/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "civilian_ratio": 0.5,
+    "country_te": 1.2,
+    "date_prec": 1,
+    "dyad_freq": 100.0,
+    "dyad_id": 123,
+    "era_1989-99": 0,
+    "era_2000-09": 0,
+    "event_clarity": 1,
+    "latitude": 33.5,
+    "longitude": 36.3,
+    "month_cos": 0.5,
+    "month_sin": 0.8,
+    "region_Africa": 0,
+    "region_Americas": 0,
+    "region_Asia": 0,
+    "region_Europe": 0,
+    "region_Middle East": 1,
+    "tov_1": 1,
+    "tov_2": 0,
+    "tov_3": 0,
+    "where_prec": 1,
+    "year": 2015
+  }'
+```
+
+### Desde Python
+
+```python
+import requests
+
+# Health check
+print(requests.get("http://localhost:8800/health").json())
+
+# Obtener ejemplo y predecir
+payload = requests.get("http://localhost:8800/predict/example").json()
+print(requests.post("http://localhost:8800/predict", json=payload).json())
+```
+
+### Desde el navegador
+
+Accedé a http://localhost:8800/docs para el Swagger UI interactivo. Cada endpoint tiene documentación, descripción de campos y un botón **Try it out** para ejecutar requests en vivo.
+
+---
 
 ## Apagar los servicios
 
