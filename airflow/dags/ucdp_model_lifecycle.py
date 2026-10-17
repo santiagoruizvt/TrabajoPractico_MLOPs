@@ -15,6 +15,7 @@ FASTAPI_URL = os.getenv("FASTAPI_URL", "http://fastapi:8800")
     schedule=None,
     start_date=datetime(2026, 9, 26),
     catchup=False,
+    is_paused_upon_creation=False,
     max_active_runs=1,
     tags=["ucdp", "mlflow"],
 )
@@ -22,7 +23,7 @@ def ucdp_model_lifecycle():
     @task(retries=0)
     def train_model() -> str:
         sys.path.insert(0, "/opt/mlops/scripts")
-        from init_mlflow_experiment import train_and_log_model
+        from ucdp_training import train_and_log_model
 
         return train_and_log_model()
 
