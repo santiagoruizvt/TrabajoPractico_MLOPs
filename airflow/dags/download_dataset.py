@@ -32,7 +32,7 @@ def get_s3_client():
         "Idempotente: si el archivo ya existe en s3://data/, no hace nada."
     ),
     schedule="@once",
-    start_date=datetime.now(timezone.utc),
+    start_date=datetime(2026, 9, 26, tzinfo=timezone.utc),
     catchup=False,
     is_paused_upon_creation=False,
     max_active_runs=1,

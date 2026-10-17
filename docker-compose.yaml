@@ -195,7 +195,6 @@ services:
     image: backend_fastapi
     container_name: fastapi
     profiles:
-      - manual-init
       - all
     depends_on:
       mlflow:
