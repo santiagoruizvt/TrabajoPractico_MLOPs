@@ -230,7 +230,8 @@ def train_and_log_model() -> str:
             ),
             # El módulo con el feature engineering viaja con el artefacto.
             code_paths=[os.path.join(os.path.dirname(__file__), "ucdp_features.py")],
-            skops_trusted_types=["numpy.dtype", "sklearn.tree._tree.Tree"],
+            # skops (default en MLflow 3.x) no serializa el transformer propio.
+            serialization_format="cloudpickle",
         )
 
         print(f"\n    run_id    : {run.info.run_id}")
