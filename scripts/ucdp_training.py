@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import mlflow
 import mlflow.sklearn
-from mlflow import MlflowClient
+import skops.io
 
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
@@ -221,6 +221,9 @@ def train_and_log_model() -> str:
         mlflow.log_artifact("/tmp/classification_report.txt")
 
         # El DAG registra este artefacto después de que finaliza el entrenamiento.
+        # skops sólo carga los tipos que considera seguros; el resto (el
+        # transformer propio, el árbol de sklearn) se declara como confiable.
+        trusted_types = skops.io.get_untrusted_types(data=skops.io.dumps(pipeline))
         mlflow.sklearn.log_model(
             sk_model=pipeline,
             artifact_path="model",
@@ -230,8 +233,7 @@ def train_and_log_model() -> str:
             ),
             # El módulo con el feature engineering viaja con el artefacto.
             code_paths=[os.path.join(os.path.dirname(__file__), "ucdp_features.py")],
-            # skops (default en MLflow 3.x) no serializa el transformer propio.
-            serialization_format="cloudpickle",
+            skops_trusted_types=trusted_types,
         )
 
         print(f"\n    run_id    : {run.info.run_id}")

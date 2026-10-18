@@ -6,8 +6,10 @@ Feature engineering del modelo de severidad UCDP-GED como transformer sklearn.
 Vive dentro del Pipeline para que el modelo registrado en MLflow reciba el
 evento CRUDO (columnas de UCDP-GED) y aplique solo todo el preprocesamiento:
 target encoding del país, frecuencia de díada, one-hot y features temporales.
-Los estadísticos aprendidos (conteos de díada, encoder del país) se ajustan
-en `fit` con el set de entrenamiento y se serializan con el modelo.
+Los estadísticos aprendidos (conteos de díada, encoding del país) se ajustan
+en `fit` con el set de entrenamiento y se guardan como arrays de numpy y
+floats, para que el Pipeline se pueda serializar con skops (el formato por
+defecto de MLflow 3.x), que no soporta objetos de pandas ni de category_encoders.
 
 El entrenamiento lo registra con `code_paths` para que este módulo viaje con
 el artefacto y la API pueda deserializarlo sin copiarlo en su imagen.
@@ -15,7 +17,6 @@ el artefacto y la API pueda deserializarlo sin copiarlo en su imagen.
 
 import numpy as np
 import pandas as pd
-import category_encoders as ce
 from sklearn.base import BaseEstimator, TransformerMixin
 
 # Columnas crudas que el modelo espera recibir.
@@ -44,10 +45,25 @@ class UCDPFeatureBuilder(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         if y is None:
             raise ValueError("UCDPFeatureBuilder necesita y para el target encoding.")
+        import category_encoders as ce
+
         X = self._as_frame(X)
-        self.dyad_counts_ = X["dyad_new_id"].value_counts()
-        self.country_encoder_ = ce.TargetEncoder(cols=["country_id"])
-        self.country_encoder_.fit(X[["country_id"]], y)
+
+        # Frequency encoding de la díada.
+        counts = X["dyad_new_id"].value_counts()
+        self.dyad_ids_ = counts.index.to_numpy(dtype=np.int64)
+        self.dyad_counts_ = counts.to_numpy(dtype=np.float64)
+
+        # Target encoding del país: se ajusta el TargetEncoder y se guarda solo
+        # el mapeo país -> valor; un país no visto recibe la media del target,
+        # igual que con handle_unknown="value" del encoder.
+        encoder = ce.TargetEncoder(cols=["country_id"])
+        encoder.fit(X[["country_id"]], y)
+        countries = np.sort(X["country_id"].unique())
+        encoded = encoder.transform(pd.DataFrame({"country_id": countries}))
+        self.country_ids_ = countries.astype(np.int64)
+        self.country_te_values_ = encoded["country_id"].to_numpy(dtype=np.float64)
+        self.country_te_prior_ = float(np.mean(y))
         return self
 
     def transform(self, X):
@@ -74,10 +90,12 @@ class UCDPFeatureBuilder(BaseEstimator, TransformerMixin):
         fe["date_prec"] = X["date_prec"]
 
         # Díada no vista en train -> NaN (lo imputa la mediana del ColumnTransformer).
-        fe["dyad_freq"] = X["dyad_new_id"].map(self.dyad_counts_)
-        fe["country_te"] = self.country_encoder_.transform(
-            X[["country_id"]]
-        )["country_id"]
+        fe["dyad_freq"] = X["dyad_new_id"].map(
+            pd.Series(self.dyad_counts_, index=self.dyad_ids_)
+        )
+        fe["country_te"] = X["country_id"].map(
+            pd.Series(self.country_te_values_, index=self.country_ids_)
+        ).fillna(self.country_te_prior_)
 
         for region in REGIONS:
             fe[f"region_{region}"] = (X["region"] == region).astype(int)
