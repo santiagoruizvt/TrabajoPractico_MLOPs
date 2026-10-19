@@ -18,7 +18,8 @@ import threading
 import mlflow.sklearn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional
+from datetime import date
+from typing import Literal, Optional
 import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────
@@ -30,14 +31,13 @@ MODEL_STAGE = "Production"
 
 SEVERITY_LABELS = {0: "Bajo", 1: "Medio", 2: "Alto"}
 
-FEATURE_ORDER = sorted([
-    "civilian_ratio", "country_te",   "date_prec",    "dyad_freq",
-    "dyad_id",        "era_1989-99",  "era_2000-09",  "event_clarity",
-    "latitude",       "longitude",    "month_cos",    "month_sin",
-    "region_Africa",  "region_Americas", "region_Asia", "region_Europe",
-    "region_Middle East", "tov_1",    "tov_2",        "tov_3",
-    "where_prec",     "year",
-])
+# Columnas crudas de UCDP-GED que recibe el modelo (el preprocesamiento
+# vive dentro del Pipeline registrado en MLflow).
+INPUT_COLUMNS = [
+    "best", "deaths_civilians", "dyad_new_id", "latitude", "longitude",
+    "date_start", "where_prec", "event_clarity", "date_prec", "country_id",
+    "region", "type_of_violence",
+]
 
 # ─────────────────────────────────────────────────────────────────
 # Carga del modelo al iniciar la API
@@ -92,38 +92,27 @@ except Exception as e:
 # Esquema de entrada
 # ─────────────────────────────────────────────────────────────────
 class EventFeatures(BaseModel):
-    civilian_ratio:     float = Field(..., ge=0, le=1,  description="Proporción de bajas civiles sobre el total (0–1)")
-    country_te:         float = Field(...,               description="Target encoding del país")
-    date_prec:          int   = Field(..., ge=1, le=5,  description="Precisión de la fecha del evento (1–5)")
-    dyad_freq:          float = Field(..., ge=0,         description="Frecuencia histórica del par de actores")
-    dyad_id:            int   = Field(...,               description="ID numérico de la díada")
-    era_1989_99:        int   = Field(..., ge=0, le=1,  alias="era_1989-99",       description="1 si el evento ocurrió entre 1989 y 1999")
-    era_2000_09:        int   = Field(..., ge=0, le=1,  alias="era_2000-09",       description="1 si el evento ocurrió entre 2000 y 2009")
-    event_clarity:      int   = Field(..., ge=1, le=2,  description="Claridad del evento (1=claro, 2=dudoso)")
-    latitude:           float = Field(...,               description="Latitud geográfica del evento")
-    longitude:          float = Field(...,               description="Longitud geográfica del evento")
-    month_cos:          float = Field(..., ge=-1, le=1, description="Componente coseno del mes (encoding cíclico)")
-    month_sin:          float = Field(..., ge=-1, le=1, description="Componente seno del mes (encoding cíclico)")
-    region_Africa:      int   = Field(..., ge=0, le=1,  description="1 si el evento ocurrió en África")
-    region_Americas:    int   = Field(..., ge=0, le=1,  description="1 si el evento ocurrió en América")
-    region_Asia:        int   = Field(..., ge=0, le=1,  description="1 si el evento ocurrió en Asia")
-    region_Europe:      int   = Field(..., ge=0, le=1,  description="1 si el evento ocurrió en Europa")
-    region_Middle_East: int   = Field(..., ge=0, le=1,  alias="region_Middle East", description="1 si el evento ocurrió en Medio Oriente")
-    tov_1:              int   = Field(..., ge=0, le=1,  description="1 si es violencia estatal")
-    tov_2:              int   = Field(..., ge=0, le=1,  description="1 si es violencia no estatal")
-    tov_3:              int   = Field(..., ge=0, le=1,  description="1 si es violencia unilateral")
-    where_prec:         int   = Field(..., ge=1, le=7,  description="Precisión geográfica del evento (1–7)")
-    year:               int   = Field(..., ge=1989,      description="Año del evento")
-
-    class Config:
-        populate_by_name = True
+    """Evento crudo, con los nombres de columna del UCDP-GED."""
+    country_id:       int   = Field(...,              description="ID numérico del país (country_id de UCDP-GED)")
+    dyad_new_id:      int   = Field(...,              description="ID de la díada (par de actores, dyad_new_id)")
+    date_start:       date  = Field(...,              description="Fecha de inicio del evento (YYYY-MM-DD)")
+    latitude:         float = Field(..., ge=-90, le=90,   description="Latitud del evento")
+    longitude:        float = Field(..., ge=-180, le=180, description="Longitud del evento")
+    region:           Literal["Africa", "Americas", "Asia", "Europe", "Middle East"] = Field(..., description="Región del evento")
+    type_of_violence: Literal[1, 2, 3] = Field(...,   description="1=estatal, 2=no estatal, 3=unilateral")
+    where_prec:       int   = Field(..., ge=1, le=7,  description="Precisión geográfica (1–7)")
+    date_prec:        int   = Field(..., ge=1, le=5,  description="Precisión de la fecha (1–5)")
+    event_clarity:    int   = Field(..., ge=1, le=2,  description="Claridad del evento (1=claro, 2=dudoso)")
+    best:             Optional[float] = Field(None, ge=0, description="Estimación de muertes totales (opcional; con deaths_civilians arma civilian_ratio)")
+    deaths_civilians: Optional[float] = Field(None, ge=0, description="Muertes civiles (opcional; si falta civilian_ratio = 0)")
 
 # ─────────────────────────────────────────────────────────────────
 # Helper
 # ─────────────────────────────────────────────────────────────────
 def features_to_df(event: EventFeatures) -> pd.DataFrame:
-    data = event.model_dump(by_alias=True)
-    return pd.DataFrame([data])[FEATURE_ORDER]
+    data = event.model_dump()
+    data["date_start"] = data["date_start"].isoformat()
+    return pd.DataFrame([data])[INPUT_COLUMNS]
 
 # ─────────────────────────────────────────────────────────────────
 # App
@@ -167,7 +156,7 @@ def health():
 def model_info():
     """
     Devuelve información detallada del modelo en Production:
-    versión, features esperadas y métricas registradas en MLflow.
+    versión, columnas de entrada y métricas registradas en MLflow.
     """
     if not model_loaded:
         raise HTTPException(
@@ -186,8 +175,7 @@ def model_info():
             "model_version": version,
             "model_stage":   MODEL_STAGE,
             "run_id":        run_id,
-            "features":      FEATURE_ORDER,
-            "n_features":    len(FEATURE_ORDER),
+            "input_columns": INPUT_COLUMNS,
             "metrics":       metrics,
             "params":        params,
         }
@@ -224,35 +212,25 @@ def predict_example():
     Representa un evento de violencia estatal en Medio Oriente en 2015.
     """
     return {
-        "civilian_ratio":    0.5,
-        "country_te":        1.2,
-        "date_prec":         1,
-        "dyad_freq":         100.0,
-        "dyad_id":           123,
-        "era_1989-99":       0,
-        "era_2000-09":       0,
-        "event_clarity":     1,
-        "latitude":          33.5,
-        "longitude":         36.3,
-        "month_cos":         0.5,
-        "month_sin":         0.8,
-        "region_Africa":     0,
-        "region_Americas":   0,
-        "region_Asia":       0,
-        "region_Europe":     0,
-        "region_Middle East": 1,
-        "tov_1":             1,
-        "tov_2":             0,
-        "tov_3":             0,
-        "where_prec":        1,
-        "year":              2015,
+        "country_id":       652,
+        "dyad_new_id":      123,
+        "date_start":       "2015-03-14",
+        "latitude":         33.5,
+        "longitude":        36.3,
+        "region":           "Middle East",
+        "type_of_violence": 1,
+        "where_prec":       1,
+        "date_prec":        1,
+        "event_clarity":    1,
+        "best":             10,
+        "deaths_civilians": 5,
     }
 
 # ── POST /predict ─────────────────────────────────────────────────
 @app.post("/predict", tags=["Predicción"])
 def predict(event: EventFeatures):
     """
-    Predice la severidad de un único evento de violencia organizada.
+    Predice la severidad de un único evento crudo de violencia organizada.
 
     Retorna la clase predicha (0=Bajo, 1=Medio, 2=Alto),
     su etiqueta en texto y las probabilidades por clase.
