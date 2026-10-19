@@ -145,4 +145,61 @@ AWS_ENDPOINT_URL_S3=http://localhost:9000
 MLFLOW_S3_ENDPOINT_URL=http://localhost:9000
 ```
 
+---
+ 
+## Validación de los servicios
+ 
+Una vez que todos los servicios estén funcionando (verificá con `docker ps -a` que estén *healthy*, o revisá en Docker Desktop), podés acceder a los diferentes servicios mediante:
+ 
+- **Apache Airflow:** http://localhost:8080
+- **MLflow:** http://localhost:5001
+- **MinIO:** http://localhost:9001 (ventana de administración de buckets)
+- **API:** http://localhost:8800
+- **Documentación de la API:** http://localhost:8800/docs
+A continuación se muestran capturas de cada servicio funcionando con este proyecto, que evidencian el ciclo completo: dato → entrenamiento → registro → promoción → servicio.
+ 
+### 1. Apache Airflow — orquestación
+ 
+Los dos DAGs del proyecto están cargados y activos: `ucdp_download_dataset` (programado `@once`, ejecutado con éxito) y `ucdp_model_lifecycle` (tags `ucdp`, `mlflow`).
+ 
+![Airflow - listado de DAGs](screenshots/airflow_dags.png)
+ 
+`ucdp_download_dataset` dispara automáticamente `ucdp_model_lifecycle`, que aparece en ejecución (run `manual`, disparado por el DAG anterior):
+ 
+![Airflow - run del DAG ucdp_download_dataset y disparo de ucdp_model_lifecycle](screenshots/aiflow_DAGs_run_ucdp_download_dataset.png)
+ 
+Detalle de las tareas de `ucdp_model_lifecycle`, todas en `success`: `train_model` → `register_model` → `promote_model` → `reload_api_model`.
+ 
+![Airflow - tareas del DAG ucdp_model_lifecycle](screenshots/tasks_model_airflow.png)
+ 
+### 2. MinIO — data lake
+ 
+El bucket `s3://data` contiene el dataset crudo `ucdp_ged.csv`, subido por el DAG de descarga.
+ 
+![MinIO - bucket data con ucdp_ged.csv](screenshots/miniio.png)
+ 
+### 3. MLflow — tracking y Model Registry
+ 
+Experimento `ucdp-severity-classification`. Cada ejecución del DAG genera una run (fuente: `airflow`) y registra una nueva versión del modelo `ucdp-severity-rf` (v1, v2, v3, v4, ...):
+ 
+![MLflow - training runs](screenshots/training_runs_mlflow.png)
+ 
+Vista complementaria del experimento con el panel del MLflow Assistant:
+ 
+![MLflow - experimento y runs](screenshots/mlflow.png)
+ 
+### 4. FastAPI — servicio del modelo
+ 
+Swagger UI (`/docs`) con todos los endpoints documentados: `/`, `/health`, `/model/info`, `/model/reload`, `/predict/example`, `/predict` y `/predict/batch`.
+ 
+![FastAPI - documentación Swagger](screenshots/fastapi_docs.png)
+ 
+### 5. Prueba de los endpoints
+ 
+Prueba de los endpoints desde la terminal. Se verifica que la API tiene cargado `ucdp-severity-rf` en stage `Production`, con sus métricas y parámetros (`/health`, `/model/info`):
+ 
+![Test de endpoints - health y model/info](screenshots/testendpoints-2.png)
+ 
+![Test de endpoints - reload, predict y predict/batch](screenshots/testendpoints-1.png)
+
 Base del entorno: [amq2-service-ml](https://github.com/facundolucianna/amq2-service-ml) (CEIA, FIUBA), adaptado para este trabajo.
